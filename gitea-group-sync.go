@@ -4,7 +4,6 @@ import (
 	"crypto/tls"
 	"flag"
 	"fmt"
-	"log"
 	"net/url"
 	"os"
 	"strconv"
@@ -12,8 +11,14 @@ import (
 	"time"
 
 	"github.com/robfig/cron/v3"
+	log "github.com/sirupsen/logrus"
 	"gopkg.in/ldap.v3"
 	"gopkg.in/yaml.v2"
+)
+
+var (
+	configFlag   = flag.String("config", "config.yaml", "Specify YAML Configuration File")
+	logLevelFlag = flag.String("loglevel", "INFO", "Minimum Log Level to display")
 )
 
 func AddUsersToTeam(apiKeys GiteaKeys, users []Account, team int) bool {
@@ -30,7 +35,7 @@ func AddUsersToTeam(apiKeys GiteaKeys, users []Account, team int) bool {
 				apiKeys.Command = "/api/v1/teams/" + fmt.Sprintf("%d", team) + "/members/" + foundUsers.Data[j].Login + "?access_token="
 				error := RequestPut(apiKeys)
 				if len(error) > 0 {
-					log.Println("Error (Team does not exist or Not Found User) :", parseJson(error).(map[string]interface{})["message"])
+					log.Errorln("Error (Team does not exist or Not Found User) :", parseJson(error).(map[string]interface{})["message"])
 				}
 			}
 		}
@@ -52,11 +57,14 @@ func DelUsersFromTeam(apiKeys GiteaKeys, Users []Account, team int) bool {
 	return true
 }
 
-var configFlag = flag.String("config", "config.yaml", "Specify YAML Configuration File")
-
 func main() {
 	// Parse flags of programm
 	flag.Parse()
+	logLevel, err := log.ParseLevel(*logLevelFlag)
+	if err != nil {
+		log.Fatalf("Loglevel %s not understood: %v", *logLevelFlag, err)
+	}
+	log.SetLevel(logLevel)
 	mainJob() // First run for check settings
 
 	var repTime string
@@ -69,7 +77,7 @@ func main() {
 	c := cron.New()
 	c.AddFunc(repTime, mainJob)
 	c.Start()
-	fmt.Println(c.Entries())
+	log.Debugf("Cron entries: %v", c.Entries())
 	for true {
 		time.Sleep(100 * time.Second)
 	}
@@ -99,32 +107,32 @@ func importEnvVars() Config {
 		port, err := strconv.Atoi(os.Getenv("LDAP_TLS_PORT"))
 		envConfig.LdapPort = port
 		envConfig.LdapTLS = true
-		log.Printf("DialTLS:=%v:%d", envConfig.LdapURL, envConfig.LdapPort)
+		log.Debugf("DialTLS:=%v:%d", envConfig.LdapURL, envConfig.LdapPort)
 		if err != nil {
-			log.Println("LDAP_TLS_PORT is invalid.")
+			log.Errorln("LDAP_TLS_PORT is invalid.")
 		}
 	} else {
 		if len(os.Getenv("LDAP_PORT")) > 0 {
 			port, err := strconv.Atoi(os.Getenv("LDAP_PORT"))
 			envConfig.LdapPort = port
 			envConfig.LdapTLS = false
-			log.Printf("Dial:=%v:%d", envConfig.LdapURL, envConfig.LdapPort)
+			log.Debugf("Dial:=%v:%d", envConfig.LdapURL, envConfig.LdapPort)
 			if err != nil {
-				log.Println("LDAP_PORT is invalid.")
+				log.Errorln("LDAP_PORT is invalid.")
 			}
 		}
 	}
 	// Set defaults for user Attributes
 	if len(os.Getenv("LDAP_USER_IDENTITY_ATTRIBUTE")) == 0 {
 		envConfig.LdapUserIdentityAttribute = "uid"
-		log.Println("By default LDAP_USER_IDENTITY_ATTRIBUTE = 'uid'")
+		log.Warnln("By default LDAP_USER_IDENTITY_ATTRIBUTE = 'uid'")
 	} else {
 		envConfig.LdapUserIdentityAttribute = os.Getenv("LDAP_USER_IDENTITY_ATTRIBUTE")
 	}
 
 	if len(os.Getenv("LDAP_USER_FULL_NAME")) == 0 {
 		envConfig.LdapUserFullName = "sn" //change to cn if you need it
-		log.Println("By default LDAP_USER_FULL_NAME = 'sn'")
+		log.Warnln("By default LDAP_USER_FULL_NAME = 'sn'")
 	} else {
 		envConfig.LdapUserFullName = os.Getenv("LDAP_USER_FULL_NAME")
 	}
@@ -152,38 +160,38 @@ func importYAMLConfig(path string) (Config, error) {
 
 func (c Config) checkConfig() {
 	if len(c.ApiKeys.TokenKey) <= 0 {
-		log.Println("GITEA_TOKEN is empty or invalid.")
+		log.Errorln("GITEA_TOKEN is empty or invalid.")
 	}
 	if len(c.ApiKeys.BaseUrl) == 0 {
-		log.Println("GITEA_URL is empty")
+		log.Errorln("GITEA_URL is empty")
 	}
 	if len(c.LdapURL) == 0 {
-		log.Println("LDAP_URL is empty")
+		log.Errorln("LDAP_URL is empty")
 	}
 	if c.LdapPort <= 0 {
-		log.Println("LDAP_TLS_PORT is invalid.")
+		log.Errorln("LDAP_TLS_PORT is invalid.")
 	} else {
-		log.Printf("DialTLS:=%v:%d", c.LdapURL, c.LdapPort)
+		log.Infof("DialTLS:=%v:%d", c.LdapURL, c.LdapPort)
 	}
 	if len(c.LdapBindDN) == 0 {
-		log.Println("BIND_DN is empty")
+		log.Warnln("BIND_DN is empty")
 	}
 	if len(c.LdapBindPassword) == 0 {
-		log.Println("BIND_PASSWORD is empty")
+		log.Warnln("BIND_PASSWORD is empty")
 	}
 	if len(c.LdapFilter) == 0 {
-		log.Println("LDAP_FILTER is empty")
+		log.Warnln("LDAP_FILTER is empty")
 	}
 	if len(c.LdapUserSearchBase) == 0 {
-		log.Println("LDAP_USER_SEARCH_BASE is empty")
+		log.Errorln("LDAP_USER_SEARCH_BASE is empty")
 	}
 	if len(c.LdapUserIdentityAttribute) == 0 {
 		c.LdapUserIdentityAttribute = "uid"
-		log.Println("By default LDAP_USER_IDENTITY_ATTRIBUTE = 'uid'")
+		log.Warnln("By default LDAP_USER_IDENTITY_ATTRIBUTE = 'uid'")
 	}
 	if len(c.LdapUserFullName) == 0 {
-		c.LdapUserFullName = "sn" //change to cn if you need it
-		log.Println("By default LDAP_USER_FULL_NAME = 'sn'")
+		c.LdapUserFullName = "sn"
+		log.Warnln("By default LDAP_USER_FULL_NAME = 'sn'")
 	}
 }
 
@@ -196,15 +204,15 @@ func mainJob() {
 
 	cfg, importErr := importYAMLConfig(*configFlag)
 	if importErr != nil {
-		log.Println("Fallback: Importing Settings from Enviroment Variables ")
+		log.Warnln("Fallback: Importing Settings from Enviroment Variables ")
 		cfg = importEnvVars()
 	} else {
-		log.Println("Successfully imported YAML Config from " + *configFlag)
-		fmt.Println(cfg)
+		log.Debugln("Successfully imported YAML Config from %s", *configFlag)
+		log.Debugf("%+v", cfg)
 	}
 	// Checks Config
 	cfg.checkConfig()
-	log.Println("Checked config elements")
+	log.Debugln("Checked config elements")
 
 	// Prepare LDAP Connection
 	var l *ldap.Conn
@@ -216,35 +224,33 @@ func mainJob() {
 	}
 
 	if err != nil {
-		fmt.Println(err)
-		fmt.Println("Please set the correct values for all specifics.")
-		os.Exit(1)
+		log.Fatalf("Error connecting to LDAP server: %v", err)
 	}
 	defer l.Close()
 
 	err = l.Bind(cfg.LdapBindDN, cfg.LdapBindPassword)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Error binding to LDAP server: %v", err)
 	}
 	page := 1
 	cfg.ApiKeys.BruteforceTokenKey = 0
 	cfg.ApiKeys.Command = "/api/v1/admin/orgs?page=" + fmt.Sprintf("%d", page) + "&limit=20&access_token=" // List all organizations
 	organizationList := RequestOrganizationList(cfg.ApiKeys)
 
-	log.Printf("%d organizations were found on the server: %s", len(organizationList), cfg.ApiKeys.BaseUrl)
+	log.Debugf("%d organizations were found on the server: %s", len(organizationList), cfg.ApiKeys.BaseUrl)
 
 	for 1 < len(organizationList) {
 
 		for i := 0; i < len(organizationList); i++ {
 
-			log.Println(organizationList)
+			log.Debugln(organizationList)
 
-			log.Printf("Begin an organization review: OrganizationName= %v, OrganizationId= %d \n", organizationList[i].Name, organizationList[i].Id)
+			log.Debugf("Begin an organization review: OrganizationName= %v, OrganizationId= %d \n", organizationList[i].Name, organizationList[i].Id)
 
 			cfg.ApiKeys.Command = "/api/v1/orgs/" + organizationList[i].Name + "/teams?access_token="
 			teamList := RequestTeamList(cfg.ApiKeys)
-			log.Printf("%d teams were found in %s organization", len(teamList), organizationList[i].Name)
-			log.Printf("Skip synchronization in the Owners team")
+			log.Debugf("%d teams were found in %s organization", len(teamList), organizationList[i].Name)
+			log.Debugf("Skip synchronization in the Owners team")
 			cfg.ApiKeys.BruteforceTokenKey = 0
 
 			for j := 1; j < len(teamList); j++ {
@@ -267,7 +273,7 @@ func mainJob() {
 				AccountsGitea := make(map[string]Account)
 				var addUserToTeamList, delUserToTeamlist []Account
 				if len(sr.Entries) > 0 {
-					log.Printf("The LDAP %s has %d users corresponding to team %s", cfg.LdapURL, len(sr.Entries), teamList[j].Name)
+					log.Infof("The LDAP %s has %d users corresponding to team %s", cfg.LdapURL, len(sr.Entries), teamList[j].Name)
 					for _, entry := range sr.Entries {
 
 						AccountsLdap[entry.GetAttributeValue(cfg.LdapUserIdentityAttribute)] = Account{
@@ -278,14 +284,14 @@ func mainJob() {
 
 					cfg.ApiKeys.Command = "/api/v1/teams/" + fmt.Sprintf("%d", teamList[j].Id) + "/members?access_token="
 					AccountsGitea, cfg.ApiKeys.BruteforceTokenKey = RequestUsersList(cfg.ApiKeys)
-					log.Printf("The gitea %s has %d users corresponding to team %s Teamid=%d", cfg.ApiKeys.BaseUrl, len(AccountsGitea), teamList[j].Name, teamList[j].Id)
+					log.Infof("The gitea %s has %d users corresponding to team %s Teamid=%d", cfg.ApiKeys.BaseUrl, len(AccountsGitea), teamList[j].Name, teamList[j].Id)
 
 					for k, v := range AccountsLdap {
 						if AccountsGitea[k].Login != v.Login {
 							addUserToTeamList = append(addUserToTeamList, v)
 						}
 					}
-					log.Printf("can be added users list %v", addUserToTeamList)
+					log.Debugf("can be added users list %v", addUserToTeamList)
 					AddUsersToTeam(cfg.ApiKeys, addUserToTeamList, teamList[j].Id)
 
 					for k, v := range AccountsGitea {
@@ -293,11 +299,11 @@ func mainJob() {
 							delUserToTeamlist = append(delUserToTeamlist, v)
 						}
 					}
-					log.Printf("must be del users list %v", delUserToTeamlist)
+					log.Debugf("must be del users list %v", delUserToTeamlist)
 					DelUsersFromTeam(cfg.ApiKeys, delUserToTeamlist, teamList[j].Id)
 
 				} else {
-					log.Printf("The LDAP %s not found users corresponding to team %s", cfg.LdapURL, teamList[j].Name)
+					log.Infof("The LDAP %s found no users corresponding to team %s", cfg.LdapURL, teamList[j].Name)
 				}
 			}
 		}
@@ -306,6 +312,6 @@ func mainJob() {
 		cfg.ApiKeys.BruteforceTokenKey = 0
 		cfg.ApiKeys.Command = "/api/v1/admin/orgs?page=" + fmt.Sprintf("%d", page) + "&limit=20&access_token=" // List all organizations
 		organizationList = RequestOrganizationList(cfg.ApiKeys)
-		log.Printf("%d organizations were found on the server: %s", len(organizationList), cfg.ApiKeys.BaseUrl)
+		log.Debugf("%d organizations were found on the server: %s", len(organizationList), cfg.ApiKeys.BaseUrl)
 	}
 }
