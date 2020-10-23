@@ -2,11 +2,11 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"io/ioutil"
-	"log"
 	"net/http"
-	"os"
+
+	log "github.com/sirupsen/logrus"
+
 	//	"reflect"
 	"net"
 	"net/url"
@@ -18,13 +18,13 @@ func CheckStatusCode(res *http.Response) {
 
 	switch {
 	case 300 <= res.StatusCode && res.StatusCode < 400:
-		fmt.Println("CheckStatusCode gitea apiKeys connection error: Redirect message")
+		log.Info("CheckStatusCode gitea apiKeys connection error: Redirect message")
 	case 401 == res.StatusCode:
-		fmt.Println("CheckStatusCode gitea apiKeys connection Error: Unauthorized")
+		log.Info("CheckStatusCode gitea apiKeys connection Error: Unauthorized")
 	case 400 <= res.StatusCode && res.StatusCode < 500:
-		fmt.Println("CheckStatusCode gitea apiKeys connection error: Client error")
+		log.Info("CheckStatusCode gitea apiKeys connection error: Client error")
 	case 500 <= res.StatusCode && res.StatusCode < 600:
-		fmt.Println("CheckStatusCode gitea apiKeys connection error Server error")
+		log.Info("CheckStatusCode gitea apiKeys connection error Server error")
 	}
 }
 
@@ -57,8 +57,7 @@ func RequestGet(apiKeys GiteaKeys) []byte {
 	url := apiKeys.BaseUrl + apiKeys.Command + apiKeys.TokenKey[apiKeys.BruteforceTokenKey]
 	res, err := cc.Get(url)
 	if err != nil && hasTimedOut(err) {
-		fmt.Println(err)
-		os.Exit(1)
+		log.Fatalf("Get Request to %s failed: %v", url, err)
 	}
 	CheckStatusCode(res)
 	b, readErr := ioutil.ReadAll(res.Body)
@@ -76,8 +75,7 @@ func RequestPut(apiKeys GiteaKeys) []byte {
 	res, err := cc.Do(request)
 	CheckStatusCode(res)
 	if err != nil && hasTimedOut(err) {
-		fmt.Println(err)
-		os.Exit(1)
+		log.Fatalf("PUT Request to %s failed: %v", url, err)
 	}
 	b, readErr := ioutil.ReadAll(res.Body)
 	if readErr != nil {
@@ -95,8 +93,7 @@ func RequestDel(apiKeys GiteaKeys) []byte {
 	res, err := cc.Do(request)
 	CheckStatusCode(res)
 	if err != nil && hasTimedOut(err) {
-		fmt.Println(err)
-		os.Exit(1)
+		log.Fatalf("DELETE Request to %s failed: %v", url, err)
 	}
 	b, readErr := ioutil.ReadAll(res.Body)
 	if readErr != nil {
@@ -126,15 +123,15 @@ func RequestUsersList(ApiKeys GiteaKeys) (map[string]Account, int) {
 	var f []Account
 	jsonErr := json.Unmarshal(b, &f)
 	if jsonErr != nil {
-		log.Println(jsonErr)
+		log.Errorf("Error unmarshaling json response: %v", jsonErr)
 		if ApiKeys.BruteforceTokenKey == len(ApiKeys.TokenKey)-1 {
-			log.Println("Token key is unsuitable, call to system administrator ")
+			log.Fatal("Token key is unsuitable, call to system administrator ")
 		} else {
-			log.Println("Can't get UsersList try another token key")
+			log.Error("Can't get UsersList try another token key")
 		}
 		if ApiKeys.BruteforceTokenKey < len(ApiKeys.TokenKey)-1 {
 			ApiKeys.BruteforceTokenKey++
-			log.Printf("BruteforceTokenKey=%d", ApiKeys.BruteforceTokenKey)
+			log.Debugf("BruteforceTokenKey=%d", ApiKeys.BruteforceTokenKey)
 			Account_u, ApiKeys.BruteforceTokenKey = RequestUsersList(ApiKeys)
 		}
 	}
@@ -157,8 +154,7 @@ func RequestOrganizationList(apiKeys GiteaKeys) []Organization {
 	var f []Organization
 	jsonErr := json.Unmarshal(b, &f)
 	if jsonErr != nil {
-		log.Printf("Please check setting GITEA_TOKEN, GITEA_URL ")
-		log.Fatal(jsonErr)
+		log.Fatalf("Please check setting GITEA_TOKEN, GITEA_URL. Error unmarshaling JSON: %v", jsonErr)
 	}
 	return f
 }
@@ -170,7 +166,7 @@ func RequestTeamList(apiKeys GiteaKeys) []Team {
 	var f []Team
 	jsonErr := json.Unmarshal(b, &f)
 	if jsonErr != nil {
-		log.Fatal(jsonErr)
+		log.Fatalf("Please check setting GITEA_TOKEN, GITEA_URL. Error unmarshaling JSON: %v", jsonErr)
 	}
 	return f
 }
@@ -179,7 +175,7 @@ func parseJson(b []byte) interface{} {
 	var f interface{}
 	jsonErr := json.Unmarshal(b, &f)
 	if jsonErr != nil {
-		log.Fatal(jsonErr)
+		log.Fatalf("Please check setting GITEA_TOKEN, GITEA_URL. Error unmarshaling JSON: %v", jsonErr)
 	}
 	m := f.(interface{})
 	return m
@@ -189,7 +185,7 @@ func parseJsonArray(b []byte) []interface{} {
 	var f interface{}
 	jsonErr := json.Unmarshal(b, &f)
 	if jsonErr != nil {
-		log.Fatal(jsonErr)
+		log.Fatalf("Please check setting GITEA_TOKEN, GITEA_URL. Error unmarshaling JSON: %v", jsonErr)
 	}
 	m := f.([]interface{})
 	return m
