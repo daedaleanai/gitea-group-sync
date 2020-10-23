@@ -21,21 +21,21 @@ var (
 	logLevelFlag = flag.String("loglevel", "INFO", "Minimum Log Level to display")
 )
 
-func AddUsersToTeam(apiKeys GiteaKeys, users []Account, team int) bool {
+func addUsersToTeam(apiKeys GiteaKeys, users []Account, team int) bool {
 
 	for i := 0; i < len(users); i++ {
 
-		fullusername := url.PathEscape(fmt.Sprintf("%s", users[i].Full_name))
+		fullusername := url.PathEscape(fmt.Sprintf("%s", users[i].FullName))
 		apiKeys.Command = "/api/v1/users/search?q=" + fullusername + "&access_token="
-		foundUsers := RequestSearchResults(apiKeys)
+		foundUsers := requestSearchResults(apiKeys)
 
 		for j := 0; j < len(foundUsers.Data); j++ {
 
 			if strings.EqualFold(users[i].Login, foundUsers.Data[j].Login) {
 				apiKeys.Command = "/api/v1/teams/" + fmt.Sprintf("%d", team) + "/members/" + foundUsers.Data[j].Login + "?access_token="
-				error := RequestPut(apiKeys)
+				error := requestPut(apiKeys)
 				if len(error) > 0 {
-					log.Errorln("Error (Team does not exist or Not Found User) :", parseJson(error).(map[string]interface{})["message"])
+					log.Errorln("Error (Team does not exist or Not Found User) :", parseJSON(error).(map[string]interface{})["message"])
 				}
 			}
 		}
@@ -43,16 +43,16 @@ func AddUsersToTeam(apiKeys GiteaKeys, users []Account, team int) bool {
 	return true
 }
 
-func DelUsersFromTeam(apiKeys GiteaKeys, Users []Account, team int) bool {
+func delUsersFromTeam(apiKeys GiteaKeys, Users []Account, team int) bool {
 
 	for i := 0; i < len(Users); i++ {
 
-		apiKeys.Command = "/api/v1/users/search?uid=" + fmt.Sprintf("%d", Users[i].Id) + "&access_token="
+		apiKeys.Command = "/api/v1/users/search?uid=" + fmt.Sprintf("%d", Users[i].ID) + "&access_token="
 
-		foundUser := RequestSearchResults(apiKeys)
+		foundUser := requestSearchResults(apiKeys)
 
 		apiKeys.Command = "/api/v1/teams/" + fmt.Sprintf("%d", team) + "/members/" + foundUser.Data[0].Login + "?access_token="
-		RequestDel(apiKeys)
+		requestDel(apiKeys)
 	}
 	return true
 }
@@ -91,9 +91,9 @@ func importEnvVars() Config {
 	envConfig := Config{}
 
 	// ApiKeys
-	envConfig.ApiKeys = GiteaKeys{}
-	envConfig.ApiKeys.TokenKey = strings.Split(os.Getenv("GITEA_TOKEN"), ",")
-	envConfig.ApiKeys.BaseUrl = os.Getenv("GITEA_URL")
+	envConfig.APIKeys = GiteaKeys{}
+	envConfig.APIKeys.TokenKey = strings.Split(os.Getenv("GITEA_TOKEN"), ",")
+	envConfig.APIKeys.BaseURL = os.Getenv("GITEA_URL")
 
 	// LDAP Config
 	envConfig.LdapURL = os.Getenv("LDAP_URL")
@@ -159,10 +159,10 @@ func importYAMLConfig(path string) (Config, error) {
 }
 
 func (c Config) checkConfig() {
-	if len(c.ApiKeys.TokenKey) <= 0 {
+	if len(c.APIKeys.TokenKey) <= 0 {
 		log.Errorln("GITEA_TOKEN is empty or invalid.")
 	}
-	if len(c.ApiKeys.BaseUrl) == 0 {
+	if len(c.APIKeys.BaseURL) == 0 {
 		log.Errorln("GITEA_URL is empty")
 	}
 	if len(c.LdapURL) == 0 {
@@ -233,11 +233,11 @@ func mainJob() {
 		log.Fatalf("Error binding to LDAP server: %v", err)
 	}
 	page := 1
-	cfg.ApiKeys.BruteforceTokenKey = 0
-	cfg.ApiKeys.Command = "/api/v1/admin/orgs?page=" + fmt.Sprintf("%d", page) + "&limit=20&access_token=" // List all organizations
-	organizationList := RequestOrganizationList(cfg.ApiKeys)
+	cfg.APIKeys.BruteforceTokenKey = 0
+	cfg.APIKeys.Command = "/api/v1/admin/orgs?page=" + fmt.Sprintf("%d", page) + "&limit=20&access_token=" // List all organizations
+	organizationList := requestOrganizationList(cfg.APIKeys)
 
-	log.Debugf("%d organizations were found on the server: %s", len(organizationList), cfg.ApiKeys.BaseUrl)
+	log.Debugf("%d organizations were found on the server: %s", len(organizationList), cfg.APIKeys.BaseURL)
 
 	for 1 < len(organizationList) {
 
@@ -245,13 +245,13 @@ func mainJob() {
 
 			log.Debugln(organizationList)
 
-			log.Debugf("Begin an organization review: OrganizationName= %v, OrganizationId= %d \n", organizationList[i].Name, organizationList[i].Id)
+			log.Debugf("Begin an organization review: OrganizationName= %v, OrganizationId= %d \n", organizationList[i].Name, organizationList[i].ID)
 
-			cfg.ApiKeys.Command = "/api/v1/orgs/" + organizationList[i].Name + "/teams?access_token="
-			teamList := RequestTeamList(cfg.ApiKeys)
+			cfg.APIKeys.Command = "/api/v1/orgs/" + organizationList[i].Name + "/teams?access_token="
+			teamList := requestTeamList(cfg.APIKeys)
 			log.Debugf("%d teams were found in %s organization", len(teamList), organizationList[i].Name)
 			log.Debugf("Skip synchronization in the Owners team")
-			cfg.ApiKeys.BruteforceTokenKey = 0
+			cfg.APIKeys.BruteforceTokenKey = 0
 
 			for j := 1; j < len(teamList); j++ {
 
@@ -277,14 +277,14 @@ func mainJob() {
 					for _, entry := range sr.Entries {
 
 						AccountsLdap[entry.GetAttributeValue(cfg.LdapUserIdentityAttribute)] = Account{
-							Full_name: entry.GetAttributeValue(cfg.LdapUserFullName),
-							Login:     entry.GetAttributeValue(cfg.LdapUserIdentityAttribute),
+							FullName: entry.GetAttributeValue(cfg.LdapUserFullName),
+							Login:    entry.GetAttributeValue(cfg.LdapUserIdentityAttribute),
 						}
 					}
 
-					cfg.ApiKeys.Command = "/api/v1/teams/" + fmt.Sprintf("%d", teamList[j].Id) + "/members?access_token="
-					AccountsGitea, cfg.ApiKeys.BruteforceTokenKey = RequestUsersList(cfg.ApiKeys)
-					log.Infof("The gitea %s has %d users corresponding to team %s Teamid=%d", cfg.ApiKeys.BaseUrl, len(AccountsGitea), teamList[j].Name, teamList[j].Id)
+					cfg.APIKeys.Command = "/api/v1/teams/" + fmt.Sprintf("%d", teamList[j].ID) + "/members?access_token="
+					AccountsGitea, cfg.APIKeys.BruteforceTokenKey = requestUsersList(cfg.APIKeys)
+					log.Infof("The gitea %s has %d users corresponding to team %s Teamid=%d", cfg.APIKeys.BaseURL, len(AccountsGitea), teamList[j].Name, teamList[j].ID)
 
 					for k, v := range AccountsLdap {
 						if AccountsGitea[k].Login != v.Login {
@@ -292,7 +292,7 @@ func mainJob() {
 						}
 					}
 					log.Debugf("can be added users list %v", addUserToTeamList)
-					AddUsersToTeam(cfg.ApiKeys, addUserToTeamList, teamList[j].Id)
+					addUsersToTeam(cfg.APIKeys, addUserToTeamList, teamList[j].ID)
 
 					for k, v := range AccountsGitea {
 						if AccountsLdap[k].Login != v.Login {
@@ -300,7 +300,7 @@ func mainJob() {
 						}
 					}
 					log.Debugf("must be del users list %v", delUserToTeamlist)
-					DelUsersFromTeam(cfg.ApiKeys, delUserToTeamlist, teamList[j].Id)
+					delUsersFromTeam(cfg.APIKeys, delUserToTeamlist, teamList[j].ID)
 
 				} else {
 					log.Infof("The LDAP %s found no users corresponding to team %s", cfg.LdapURL, teamList[j].Name)
@@ -309,9 +309,9 @@ func mainJob() {
 		}
 
 		page++
-		cfg.ApiKeys.BruteforceTokenKey = 0
-		cfg.ApiKeys.Command = "/api/v1/admin/orgs?page=" + fmt.Sprintf("%d", page) + "&limit=20&access_token=" // List all organizations
-		organizationList = RequestOrganizationList(cfg.ApiKeys)
-		log.Debugf("%d organizations were found on the server: %s", len(organizationList), cfg.ApiKeys.BaseUrl)
+		cfg.APIKeys.BruteforceTokenKey = 0
+		cfg.APIKeys.Command = "/api/v1/admin/orgs?page=" + fmt.Sprintf("%d", page) + "&limit=20&access_token=" // List all organizations
+		organizationList = requestOrganizationList(cfg.APIKeys)
+		log.Debugf("%d organizations were found on the server: %s", len(organizationList), cfg.APIKeys.BaseURL)
 	}
 }
