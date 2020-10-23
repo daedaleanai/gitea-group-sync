@@ -239,7 +239,7 @@ func mainJob() {
 
 	log.Debugf("%d organizations were found on the server: %s", len(organizationList), cfg.APIKeys.BaseURL)
 
-	for 1 < len(organizationList) {
+	for 0 < len(organizationList) {
 
 		for i := 0; i < len(organizationList); i++ {
 
