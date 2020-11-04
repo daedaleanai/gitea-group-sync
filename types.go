@@ -52,6 +52,7 @@ type GiteaKeys struct {
 	BaseURL            string   `yaml:"BaseUrl"`
 	Command            string
 	BruteforceTokenKey int
+	DryRun             bool
 }
 
 // Config describes the settings of the application. This structure is used in the settings-import process

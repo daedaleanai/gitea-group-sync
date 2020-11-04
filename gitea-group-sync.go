@@ -19,6 +19,7 @@ import (
 var (
 	configFlag   = flag.String("config", "config.yaml", "Specify YAML Configuration File")
 	logLevelFlag = flag.String("loglevel", "INFO", "Minimum Log Level to display")
+	dryRunFlag   = flag.Bool("dryrun", true, "Whether to make changes.")
 )
 
 func addUsersToTeam(apiKeys GiteaKeys, users []Account, team int) bool {
@@ -26,8 +27,7 @@ func addUsersToTeam(apiKeys GiteaKeys, users []Account, team int) bool {
 	for i := 0; i < len(users); i++ {
 
 		fullusername := url.PathEscape(fmt.Sprintf("%s", users[i].FullName))
-		apiKeys.Command = "/api/v1/users/search?q=" + fullusername + "&access_token="
-		foundUsers := requestSearchResults(apiKeys)
+		foundUsers := getUserByUsername(apiKeys, fullusername)
 
 		for j := 0; j < len(foundUsers.Data); j++ {
 
@@ -46,13 +46,9 @@ func addUsersToTeam(apiKeys GiteaKeys, users []Account, team int) bool {
 func delUsersFromTeam(apiKeys GiteaKeys, Users []Account, team int) bool {
 
 	for i := 0; i < len(Users); i++ {
+		foundUser := getUserByID(apiKeys, Users[i].ID)
 
-		apiKeys.Command = "/api/v1/users/search?uid=" + fmt.Sprintf("%d", Users[i].ID) + "&access_token="
-
-		foundUser := requestSearchResults(apiKeys)
-
-		apiKeys.Command = "/api/v1/teams/" + fmt.Sprintf("%d", team) + "/members/" + foundUser.Data[0].Login + "?access_token="
-		requestDel(apiKeys)
+		deleteUserFromTeam(apiKeys, team, foundUser.Data[0])
 	}
 	return true
 }
@@ -207,12 +203,14 @@ func mainJob() {
 		log.Warnln("Fallback: Importing Settings from Enviroment Variables ")
 		cfg = importEnvVars()
 	} else {
-		log.Debugln("Successfully imported YAML Config from %s", *configFlag)
+		log.Debugf("Successfully imported YAML Config from %s", *configFlag)
 		log.Debugf("%+v", cfg)
 	}
 	// Checks Config
 	cfg.checkConfig()
 	log.Debugln("Checked config elements")
+
+	cfg.APIKeys.DryRun = *dryRunFlag
 
 	// Prepare LDAP Connection
 	var l *ldap.Conn
@@ -232,86 +230,73 @@ func mainJob() {
 	if err != nil {
 		log.Fatalf("Error binding to LDAP server: %v", err)
 	}
-	page := 1
 	cfg.APIKeys.BruteforceTokenKey = 0
-	cfg.APIKeys.Command = "/api/v1/admin/orgs?page=" + fmt.Sprintf("%d", page) + "&limit=20&access_token=" // List all organizations
 	organizationList := requestOrganizationList(cfg.APIKeys)
 
 	log.Debugf("%d organizations were found on the server: %s", len(organizationList), cfg.APIKeys.BaseURL)
 
-	for 0 < len(organizationList) {
+	for _, org := range organizationList {
 
-		for i := 0; i < len(organizationList); i++ {
+		log.Debugln(organizationList)
 
-			log.Debugln(organizationList)
+		log.Debugf("Begin an organization review: OrganizationName= %v, OrganizationId= %d \n", org.Name, org.ID)
 
-			log.Debugf("Begin an organization review: OrganizationName= %v, OrganizationId= %d \n", organizationList[i].Name, organizationList[i].ID)
+		teamList := requestTeamList(cfg.APIKeys, org)
+		log.Debugf("%d teams were found in %s organization", len(teamList), org.Name)
+		log.Debugf("Skip synchronization in the Owners team")
+		cfg.APIKeys.BruteforceTokenKey = 0
 
-			cfg.APIKeys.Command = "/api/v1/orgs/" + organizationList[i].Name + "/teams?access_token="
-			teamList := requestTeamList(cfg.APIKeys)
-			log.Debugf("%d teams were found in %s organization", len(teamList), organizationList[i].Name)
-			log.Debugf("Skip synchronization in the Owners team")
-			cfg.APIKeys.BruteforceTokenKey = 0
+		for _, team := range teamList {
 
-			for j := 1; j < len(teamList); j++ {
+			// preparing request to ldap server
+			filter := fmt.Sprintf(cfg.LdapFilter, team.Name)
+			searchRequest := ldap.NewSearchRequest(
+				cfg.LdapUserSearchBase, // The base dn to search
+				ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
+				filter, // The filter to apply
+				[]string{"cn", "uid", "mailPrimaryAddress, sn", cfg.LdapUserIdentityAttribute}, // A list attributes to retrieve
+				nil,
+			)
+			// make request to ldap server
+			sr, err := l.Search(searchRequest)
+			if err != nil {
+				log.Fatal(err)
+			}
+			AccountsLdap := make(map[string]Account)
+			AccountsGitea := make(map[string]Account)
+			var addUserToTeamList, delUserToTeamlist []Account
+			if len(sr.Entries) > 0 {
+				log.Infof("The LDAP %s has %d users corresponding to team %s", cfg.LdapURL, len(sr.Entries), team.Name)
+				for _, entry := range sr.Entries {
 
-				// preparing request to ldap server
-				filter := fmt.Sprintf(cfg.LdapFilter, teamList[j].Name)
-				searchRequest := ldap.NewSearchRequest(
-					cfg.LdapUserSearchBase, // The base dn to search
-					ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 0, 0, false,
-					filter, // The filter to apply
-					[]string{"cn", "uid", "mailPrimaryAddress, sn", cfg.LdapUserIdentityAttribute}, // A list attributes to retrieve
-					nil,
-				)
-				// make request to ldap server
-				sr, err := l.Search(searchRequest)
-				if err != nil {
-					log.Fatal(err)
+					AccountsLdap[entry.GetAttributeValue(cfg.LdapUserIdentityAttribute)] = Account{
+						FullName: entry.GetAttributeValue(cfg.LdapUserFullName),
+						Login:    entry.GetAttributeValue(cfg.LdapUserIdentityAttribute),
+					}
 				}
-				AccountsLdap := make(map[string]Account)
-				AccountsGitea := make(map[string]Account)
-				var addUserToTeamList, delUserToTeamlist []Account
-				if len(sr.Entries) > 0 {
-					log.Infof("The LDAP %s has %d users corresponding to team %s", cfg.LdapURL, len(sr.Entries), teamList[j].Name)
-					for _, entry := range sr.Entries {
 
-						AccountsLdap[entry.GetAttributeValue(cfg.LdapUserIdentityAttribute)] = Account{
-							FullName: entry.GetAttributeValue(cfg.LdapUserFullName),
-							Login:    entry.GetAttributeValue(cfg.LdapUserIdentityAttribute),
-						}
+				AccountsGitea = requestUsersList(cfg.APIKeys, team)
+				log.Infof("The gitea %s has %d users corresponding to team %s Teamid=%d", cfg.APIKeys.BaseURL, len(AccountsGitea), team.Name, team.ID)
+
+				for k, v := range AccountsLdap {
+					if AccountsGitea[k].Login != v.Login {
+						addUserToTeamList = append(addUserToTeamList, v)
 					}
-
-					cfg.APIKeys.Command = "/api/v1/teams/" + fmt.Sprintf("%d", teamList[j].ID) + "/members?access_token="
-					AccountsGitea, cfg.APIKeys.BruteforceTokenKey = requestUsersList(cfg.APIKeys)
-					log.Infof("The gitea %s has %d users corresponding to team %s Teamid=%d", cfg.APIKeys.BaseURL, len(AccountsGitea), teamList[j].Name, teamList[j].ID)
-
-					for k, v := range AccountsLdap {
-						if AccountsGitea[k].Login != v.Login {
-							addUserToTeamList = append(addUserToTeamList, v)
-						}
-					}
-					log.Debugf("can be added users list %v", addUserToTeamList)
-					addUsersToTeam(cfg.APIKeys, addUserToTeamList, teamList[j].ID)
-
-					for k, v := range AccountsGitea {
-						if AccountsLdap[k].Login != v.Login {
-							delUserToTeamlist = append(delUserToTeamlist, v)
-						}
-					}
-					log.Debugf("must be del users list %v", delUserToTeamlist)
-					delUsersFromTeam(cfg.APIKeys, delUserToTeamlist, teamList[j].ID)
-
-				} else {
-					log.Infof("The LDAP %s found no users corresponding to team %s", cfg.LdapURL, teamList[j].Name)
 				}
+				log.Debugf("can be added users list %v", addUserToTeamList)
+				addUsersToTeam(cfg.APIKeys, addUserToTeamList, team.ID)
+
+				for k, v := range AccountsGitea {
+					if AccountsLdap[k].Login != v.Login {
+						delUserToTeamlist = append(delUserToTeamlist, v)
+					}
+				}
+				log.Debugf("must be del users list %v", delUserToTeamlist)
+				delUsersFromTeam(cfg.APIKeys, delUserToTeamlist, team.ID)
+
+			} else {
+				log.Infof("The LDAP %s found no users corresponding to team %s", cfg.LdapURL, team.Name)
 			}
 		}
-
-		page++
-		cfg.APIKeys.BruteforceTokenKey = 0
-		cfg.APIKeys.Command = "/api/v1/admin/orgs?page=" + fmt.Sprintf("%d", page) + "&limit=20&access_token=" // List all organizations
-		organizationList = requestOrganizationList(cfg.APIKeys)
-		log.Debugf("%d organizations were found on the server: %s", len(organizationList), cfg.APIKeys.BaseURL)
 	}
 }

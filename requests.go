@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io/ioutil"
 	"net/http"
 
@@ -52,25 +53,36 @@ func hasTimedOut(err error) bool {
 	return false
 }
 
-func requestGet(apiKeys GiteaKeys) []byte {
+func requestGet(apiKeys GiteaKeys, command string) []byte {
 	cc := &http.Client{Timeout: time.Second * 2}
-	url := apiKeys.BaseURL + apiKeys.Command + apiKeys.TokenKey[apiKeys.BruteforceTokenKey]
-	res, err := cc.Get(url)
-	if err != nil && hasTimedOut(err) {
-		log.Fatalf("Get Request to %s failed: %v", url, err)
+	for index := range apiKeys.TokenKey {
+		url := fmt.Sprintf("%s%s%s", apiKeys.BaseURL, command, apiKeys.TokenKey[index])
+
+		res, err := cc.Get(url)
+		if err != nil && hasTimedOut(err) {
+			log.Fatalf("Get Request to %s failed: %v", url, err)
+		}
+		checkStatusCode(res)
+		if res.StatusCode == 401 {
+			continue
+		}
+		b, readErr := ioutil.ReadAll(res.Body)
+		if readErr != nil {
+			log.Fatal(readErr)
+		}
+		res.Body.Close()
+		return b
 	}
-	checkStatusCode(res)
-	b, readErr := ioutil.ReadAll(res.Body)
-	if readErr != nil {
-		log.Fatal(readErr)
-	}
-	res.Body.Close()
-	return b
+	return nil
 }
 
 func requestPut(apiKeys GiteaKeys) []byte {
 	cc := &http.Client{Timeout: time.Second * 2}
 	url := apiKeys.BaseURL + apiKeys.Command + apiKeys.TokenKey[apiKeys.BruteforceTokenKey]
+	if apiKeys.DryRun {
+		log.Debugf("Would call %s", url)
+		return nil
+	}
 	request, err := http.NewRequest("PUT", url, nil)
 	res, err := cc.Do(request)
 	checkStatusCode(res)
@@ -85,10 +97,13 @@ func requestPut(apiKeys GiteaKeys) []byte {
 	return b
 }
 
-func requestDel(apiKeys GiteaKeys) []byte {
-
+func requestDel(apiKeys GiteaKeys, command string) []byte {
 	cc := &http.Client{Timeout: time.Second * 2}
-	url := apiKeys.BaseURL + apiKeys.Command + apiKeys.TokenKey[apiKeys.BruteforceTokenKey]
+	url := fmt.Sprintf("%s%s%s", apiKeys.BaseURL, command, apiKeys.TokenKey[apiKeys.BruteforceTokenKey])
+	if apiKeys.DryRun {
+		log.Debugf("Would call %s", url)
+		return nil
+	}
 	request, err := http.NewRequest("DELETE", url, nil)
 	res, err := cc.Do(request)
 	checkStatusCode(res)
@@ -103,9 +118,11 @@ func requestDel(apiKeys GiteaKeys) []byte {
 	return b
 }
 
-func requestSearchResults(APIKeys GiteaKeys) SearchResults {
+func getUserByUsername(APIKeys GiteaKeys, username string) SearchResults {
 
-	b := requestGet(APIKeys)
+	command := fmt.Sprintf("/api/v1/users/search?q=%s&access_token=", username)
+
+	b := requestGet(APIKeys, command)
 
 	var f SearchResults
 	jsonErr := json.Unmarshal(b, &f)
@@ -115,25 +132,37 @@ func requestSearchResults(APIKeys GiteaKeys) SearchResults {
 	return f
 }
 
-func requestUsersList(APIKeys GiteaKeys) (map[string]Account, int) {
+func getUserByID(APIKeys GiteaKeys, ID int) SearchResults {
 
-	b := requestGet(APIKeys)
+	command := fmt.Sprintf("/api/v1/users/search?uid=%d&access_token=", ID)
+
+	b := requestGet(APIKeys, command)
+
+	var f SearchResults
+	jsonErr := json.Unmarshal(b, &f)
+	if jsonErr != nil {
+		log.Fatal(jsonErr)
+	}
+	return f
+}
+
+func deleteUserFromTeam(APIKeys GiteaKeys, team int, user User) {
+	command := fmt.Sprintf("/api/v1/teams/%d/members/%s?access_token=", team, user.Login)
+
+	requestDel(APIKeys, command)
+}
+
+func requestUsersList(APIKeys GiteaKeys, team Team) map[string]Account {
+
+	command := fmt.Sprintf("/api/v1/teams/%d/members?access_token=", team.ID)
 	var AccountU = make(map[string]Account)
-
 	var f []Account
+
+	b := requestGet(APIKeys, command)
+
 	jsonErr := json.Unmarshal(b, &f)
 	if jsonErr != nil {
 		log.Errorf("Error unmarshaling json response: %v", jsonErr)
-		if APIKeys.BruteforceTokenKey == len(APIKeys.TokenKey)-1 {
-			log.Fatal("Token key is unsuitable, call to system administrator ")
-		} else {
-			log.Error("Can't get UsersList try another token key")
-		}
-		if APIKeys.BruteforceTokenKey < len(APIKeys.TokenKey)-1 {
-			APIKeys.BruteforceTokenKey++
-			log.Debugf("BruteforceTokenKey=%d", APIKeys.BruteforceTokenKey)
-			AccountU, APIKeys.BruteforceTokenKey = requestUsersList(APIKeys)
-		}
 	}
 
 	for i := 0; i < len(f); i++ {
@@ -144,24 +173,38 @@ func requestUsersList(APIKeys GiteaKeys) (map[string]Account, int) {
 			Login:    f[i].Login,
 		}
 	}
-	return AccountU, APIKeys.BruteforceTokenKey
+	return AccountU
 }
 
 func requestOrganizationList(apiKeys GiteaKeys) []Organization {
+	page := 1
+	limit := 20
 
-	b := requestGet(apiKeys)
+	var orgs []Organization
 
-	var f []Organization
-	jsonErr := json.Unmarshal(b, &f)
-	if jsonErr != nil {
-		log.Fatalf("Please check setting GITEA_TOKEN, GITEA_URL. Error unmarshaling JSON: %v", jsonErr)
+	for {
+		command := fmt.Sprintf("/api/v1/admin/orgs?page=%d&limit=%d&access_token=", page, limit) // List all organizations
+
+		b := requestGet(apiKeys, command)
+
+		var f []Organization
+		jsonErr := json.Unmarshal(b, &f)
+		if jsonErr != nil {
+			log.Fatalf("Please check setting GITEA_TOKEN, GITEA_URL. Error unmarshaling JSON: %v", jsonErr)
+		}
+		if len(f) == 0 {
+			break
+		}
+		orgs = append(orgs, f...)
+		page++
 	}
-	return f
+	return orgs
 }
 
-func requestTeamList(apiKeys GiteaKeys) []Team {
+func requestTeamList(apiKeys GiteaKeys, org Organization) []Team {
+	command := fmt.Sprintf("/api/v1/orgs/%s/teams?access_token=", org.Name)
 
-	b := requestGet(apiKeys)
+	b := requestGet(apiKeys, command)
 
 	var f []Team
 	jsonErr := json.Unmarshal(b, &f)
